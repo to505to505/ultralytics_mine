@@ -600,6 +600,19 @@ class Model(nn.Module):
         kwargs["mode"] = "track"
         return self.predict(source=source, stream=stream, **kwargs)
 
+
+
+    def val_noclass( self,
+    
+        **args,
+
+    ):
+        validator =self._smart_load("validator_noclass")(args=args, _callbacks=self.callbacks)
+        validator(model=self.model)
+        self.metrics = validator.metrics
+        return validator.metrics
+
+
     def val(
         self,
         validator=None,

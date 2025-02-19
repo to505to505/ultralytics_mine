@@ -24,6 +24,11 @@ from .block import (
     C3,
     C3TR,
     CIB,
+
+
+    SimAM,
+
+
     DFL,
     ELAN1,
     PSA,
@@ -61,6 +66,8 @@ from .conv import (
     CBAM,
     ChannelAttention,
     Concat,
+
+
     Conv,
     Conv2,
     ConvTranspose,
@@ -90,6 +97,11 @@ __all__ = (
     "Conv",
     "Conv2",
     "LightConv",
+
+    "SimAM",
+
+
+    
     "RepConv",
     "DWConv",
     "DWConvTranspose2d",

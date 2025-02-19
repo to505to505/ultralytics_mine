@@ -166,6 +166,9 @@ class BaseValidator:
             Profile(device=self.device),
         )
         bar = TQDM(self.dataloader, desc=self.get_desc(), total=len(self.dataloader))
+
+
+        
         self.init_metrics(de_parallel(model))
         self.jdict = []  # empty before each val
         for batch_i, batch in enumerate(bar):

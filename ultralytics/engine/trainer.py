@@ -101,8 +101,13 @@ class BaseTrainer:
         self.args = get_cfg(cfg, overrides)
         self.check_resume(overrides)
         self.device = select_device(self.args.device, self.args.batch)
-        self.validator = None
+        self.validator_val = None
+        self.validator_train = None
+        self.validator_test = None
         self.metrics = None
+        self.metrics_test = None
+        self.metrics_train = None
+        self.metrics_val = None
         self.plots = {}
         init_seeds(self.args.seed + 1 + RANK, deterministic=self.args.deterministic)
 
@@ -143,6 +148,7 @@ class BaseTrainer:
         self.loss = None
         self.tloss = None
         self.loss_names = ["Loss"]
+        self.train_metrics = {}  # Dictionary to store training metrics
         self.csv = self.save_dir / "results.csv"
         self.plot_idx = [0, 1, 2]
 
@@ -289,14 +295,18 @@ class BaseTrainer:
         # Dataloaders
         batch_size = self.batch_size // max(world_size, 1)
         self.train_loader = self.get_dataloader(self.trainset, batch_size=batch_size, rank=LOCAL_RANK, mode="train")
+        self.train_loader_for_val = self.get_dataloader(self.trainset, batch_size=batch_size, rank=LOCAL_RANK, mode="val")
         if RANK in {-1, 0}:
             # Note: When training DOTA dataset, double batch size could get OOM on images with >2000 objects.
             self.test_loader = self.get_dataloader(
                 self.testset, batch_size=batch_size if self.args.task == "obb" else batch_size * 2, rank=-1, mode="val"
             )
-            self.validator = self.get_validator()
-            metric_keys = self.validator.metrics.keys + self.label_loss_items(prefix="val")
+            self.validator_train = self.get_validator('train')
+            self.validator_test = self.get_validator('test')
+           
+            metric_keys = [f'test/{k}' for k in self.validator_test.metrics.keys] + [f'train/{k}' for k in self.validator_train.metrics.keys] + self.label_loss_items(prefix="val")
             self.metrics = dict(zip(metric_keys, [0] * len(metric_keys)))
+            
             self.ema = ModelEMA(self.model)
             if self.args.plots:
                 self.plot_training_labels()
@@ -421,6 +431,7 @@ class BaseTrainer:
                         )
                     )
                     self.run_callbacks("on_batch_end")
+                    
                     if self.args.plots and ni in self.plot_idx:
                         self.plot_training_samples(batch, ni)
 
@@ -433,9 +444,16 @@ class BaseTrainer:
                 self.ema.update_attr(self.model, include=["yaml", "nc", "args", "names", "stride", "class_weights"])
 
                 # Validation
-                if self.args.val or final_epoch or self.stopper.possible_stop or self.stop:
-                    self.metrics, self.fitness = self.validate()
-                self.save_metrics(metrics={**self.label_loss_items(self.tloss), **self.metrics, **self.lr})
+                
+                self.metrics_test, self.metrics_train, self.fitness = self.validate()
+                
+                self.save_metrics(metrics={
+    **self.label_loss_items(self.tloss),
+    **{f"test/{k}": v for k, v in self.metrics_test.items()},
+    **{f"train/{k}": v for k, v in self.metrics_train.items()},
+    **self.lr
+})
+                self.plot_metrics()
                 self.stop |= self.stopper(epoch + 1, self.fitness) or final_epoch
                 if self.args.time:
                     self.stop |= (time.time() - self.train_time_start) > (self.args.time * 3600)
@@ -444,6 +462,8 @@ class BaseTrainer:
                 if self.args.save or final_epoch:
                     self.save_model()
                     self.run_callbacks("on_model_save")
+
+            
 
             # Scheduler
             t = time.time()
@@ -597,17 +617,20 @@ class BaseTrainer:
 
         The returned dict is expected to contain "fitness" key.
         """
-        metrics = self.validator(self)
-        fitness = metrics.pop("fitness", -self.loss.detach().cpu().numpy())  # use loss as fitness measure if not found
+        metrics_test = self.validator_test(self)
+        metrics_train= self.validator_train(self)
+    
+
+        fitness = metrics_test.pop("fitness", -self.loss.detach().cpu().numpy())  # use loss as fitness measure if not found
         if not self.best_fitness or self.best_fitness < fitness:
             self.best_fitness = fitness
-        return metrics, fitness
+        return metrics_test, metrics_train, fitness
 
     def get_model(self, cfg=None, weights=None, verbose=True):
         """Get model and raise NotImplementedError for loading cfg files."""
         raise NotImplementedError("This task trainer doesn't support loading cfg files")
 
-    def get_validator(self):
+    def get_validator(self, split):
         """Returns a NotImplementedError when the get_validator function is called."""
         raise NotImplementedError("get_validator function not implemented in trainer")
 
@@ -627,6 +650,7 @@ class BaseTrainer:
             This is not needed for classification but necessary for segmentation & detection
         """
         return {"loss": loss_items} if loss_items is not None else ["loss"]
+
 
     def set_model_attributes(self):
         """To set or update model parameters before training."""
@@ -650,16 +674,22 @@ class BaseTrainer:
         pass
 
     def save_metrics(self, metrics):
-        """Saves training metrics to a CSV file."""
-        keys, vals = list(metrics.keys()), list(metrics.values())
-        n = len(metrics) + 2  # number of cols
-        s = "" if self.csv.exists() else (("%s," * n % tuple(["epoch", "time"] + keys)).rstrip(",") + "\n")  # header
-        t = time.time() - self.train_time_start
-        with open(self.csv, "a") as f:
-            f.write(s + ("%.6g," * n % tuple([self.epoch + 1, t] + vals)).rstrip(",") + "\n")
+      
+      """Saves training metrics to a CSV file."""
+      keys, vals = list(metrics.keys()), list(metrics.values())
+      n = len(metrics) + 2  # number of cols
+      s = "" if self.csv.exists() else (("%s," * n % tuple(["epoch", "time"] + keys)).rstrip(",") + "\n")  # header
+      t = time.time() - self.train_time_start
+      with open(self.csv, "a") as f:
+          f.write(s + ("%.6g," * n % tuple([self.epoch + 1, t] + vals)).rstrip(",") + "\n")
 
     def plot_metrics(self):
         """Plot and display metrics visually."""
+        from utils.plotting import plot_results
+        plot_results(file=self.save_dir)
+
+
+
         pass
 
     def on_plot(self, name, data=None):

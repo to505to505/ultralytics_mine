@@ -10,6 +10,7 @@ from pathlib import Path
 import torch
 import torch.nn as nn
 
+
 from ultralytics.nn.modules import (
     AIFI,
     C1,
@@ -25,6 +26,12 @@ from ultralytics.nn.modules import (
     SPPF,
     AConv,
     ADown,
+
+
+    SimAM,
+
+
+
     Bottleneck,
     BottleneckCSP,
     C2f,
@@ -1042,6 +1049,8 @@ def parse_model(d, ch, verbose=True):  # model_dict, input_channels(3)
                 n = 1
         elif m is ResNetLayer:
             c2 = args[1] if args[3] else args[1] * 4
+        elif m is SimAM:
+           args = [ch[f]]
         elif m is nn.BatchNorm2d:
             args = [ch[f]]
         elif m is Concat:

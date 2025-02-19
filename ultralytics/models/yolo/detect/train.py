@@ -90,12 +90,22 @@ class DetectionTrainer(BaseTrainer):
             model.load(weights)
         return model
 
-    def get_validator(self):
+    def get_validator(self, split =  'test'):
         """Returns a DetectionValidator for YOLO model validation."""
         self.loss_names = "box_loss", "cls_loss", "dfl_loss"
-        return yolo.detect.DetectionValidator(
-            self.test_loader, save_dir=self.save_dir, args=copy(self.args), _callbacks=self.callbacks
-        )
+        if split == 'test':
+                
+            return yolo.detect.DetectionValidator(
+                self.test_loader, save_dir=self.save_dir, args=copy(self.args), _callbacks=self.callbacks
+            )
+        # elif split == 'val':
+        #     return yolo.detect.DetectionValidator(
+        #         self.val_loader, save_dir=self.save_dir, args=copy(self.args), _callbacks=self.callbacks
+        #     )
+        elif split == 'train':
+            return yolo.detect.DetectionValidator(
+                self.train_loader_for_val, save_dir=self.save_dir, args=copy(self.args), _callbacks=self.callbacks
+            )
 
     def label_loss_items(self, loss_items=None, prefix="train"):
         """

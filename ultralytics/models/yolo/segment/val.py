@@ -6,6 +6,7 @@ from pathlib import Path
 import numpy as np
 import torch
 import torch.nn.functional as F
+from sklearn.metrics import f1_score
 
 from ultralytics.models.yolo.detect import DetectionValidator
 from ultralytics.utils import LOGGER, NUM_THREADS, ops
@@ -35,6 +36,7 @@ class SegmentationValidator(DetectionValidator):
         self.process = None
         self.args.task = "segment"
         self.metrics = SegmentMetrics(save_dir=self.save_dir, on_plot=self.on_plot)
+         
 
     def preprocess(self, batch):
         """Preprocesses batch by converting masks to float and sending to device."""
@@ -101,6 +103,7 @@ class SegmentationValidator(DetectionValidator):
         for si, (pred, proto) in enumerate(zip(preds[0], preds[1])):
             self.seen += 1
             npr = len(pred)
+            
             stat = dict(
                 conf=torch.zeros(0, device=self.device),
                 pred_cls=torch.zeros(0, device=self.device),
@@ -110,6 +113,9 @@ class SegmentationValidator(DetectionValidator):
             pbatch = self._prepare_batch(si, batch)
             cls, bbox = pbatch.pop("cls"), pbatch.pop("bbox")
             nl = len(cls)
+
+
+            
             stat["target_cls"] = cls
             stat["target_img"] = cls.unique()
             if npr == 0:
@@ -122,21 +128,28 @@ class SegmentationValidator(DetectionValidator):
 
             # Masks
             gt_masks = pbatch.pop("masks")
+            print(gt_masks.shape)
+        
             # Predictions
             if self.args.single_cls:
                 pred[:, 5] = 0
             predn, pred_masks = self._prepare_pred(pred, pbatch, proto)
+            
             stat["conf"] = predn[:, 4]
             stat["pred_cls"] = predn[:, 5]
 
             # Evaluate
             if nl:
+            
                 stat["tp"] = self._process_batch(predn, bbox, cls)
                 stat["tp_m"] = self._process_batch(
                     predn, bbox, cls, pred_masks, gt_masks, self.args.overlap_mask, masks=True
                 )
                 if self.args.plots:
                     self.confusion_matrix.process_batch(predn, bbox, cls)
+
+              
+    
 
             for k in self.stats.keys():
                 self.stats[k].append(stat[k])
@@ -215,6 +228,8 @@ class SegmentationValidator(DetectionValidator):
             iou = box_iou(gt_bboxes, detections[:, :4])
 
         return self.match_predictions(detections[:, 5], gt_cls, iou)
+    
+
 
     def plot_val_samples(self, batch, ni):
         """Plots validation samples with bounding box labels."""
@@ -287,6 +302,8 @@ class SegmentationValidator(DetectionValidator):
                     "segmentation": rles[i],
                 }
             )
+
+
 
     def eval_json(self, stats):
         """Return COCO-style object detection evaluation metrics."""

@@ -948,6 +948,71 @@ class MixUp(BaseMixTransform):
         return labels
 
 
+import albumentations as A
+class ElasticTransform:
+    def __init__(
+        self, alpha=1, sigma=50, interpolation=1, border_mode=4, p =0.5, pre_transform = None
+    ):
+            
+        self.alpha = alpha
+        self.sigma = sigma
+        self.interpolation = interpolation
+        self.border_mode = border_mode
+        self.p = p
+        self.pre_transform = pre_transform
+
+
+    def apply_trans(self, image, mask, bboxes):
+        transform = A.Compose([
+        A.ElasticTransform(alpha=self.alpha, sigma=self.sigma, p=self.p),
+        ], is_check_shapes = False, bbox_params=A.BboxParams(format="yolo", label_fields=["class_labels"]))
+        transformed = transform(image=image, mask=mask, bboxes=bboxes)
+
+        return transformed
+       
+
+    def __call__(self, labels):
+        if self.pre_transform and "mosaic_border" not in labels:
+            labels = self.pre_transform(labels)
+        labels.pop("ratio_pad", None)  # do not need ratio pad
+
+        img = labels["img"]
+        cls = labels["cls"]
+        instances = labels.pop("instances")
+        # Make sure the coord formats are right
+        instances.convert_bbox(format="xyxy")
+        instances.denormalize(*img.shape[:2][::-1])
+
+        transformed = self.apply_trans(img, instances.segments, instances.bboxes)
+        
+        img = transformed['image']
+
+        if len(segments):
+            bboxes = transformed['bboxes']
+
+            segments = transformed['mask']
+        
+        # Update bboxes if there are segments.
+      
+       
+        new_instances = Instances(bboxes, segments, bbox_format="xyxy", normalized=False)
+        # Clip
+        new_instances.clip(*self.size)
+
+        
+        # Make the bboxes have the same scale with new_bboxes
+        i = self.box_candidates(
+            box1=instances.bboxes.T, box2=new_instances.bboxes.T, area_thr=0.01 if len(segments) else 0.10
+        )
+        labels["instances"] = new_instances[i]
+        labels["cls"] = cls[i]
+        labels["img"] = img
+        labels["resized_shape"] = img.shape[:2]
+        return labels
+
+            
+
+
 class RandomPerspective:
     """
     Implements random perspective and affine transformations on images and corresponding annotations.
@@ -1729,6 +1794,18 @@ class CopyPaste(BaseMixTransform):
         return labels1
 
 
+# Define this function at the module level (outside the class)
+def create_resize_transform(height, width, contains_spatial):
+    import albumentations as A
+    if contains_spatial:
+        return A.Compose(
+            A.Resize(height=height, width=width),
+            bbox_params=A.BboxParams(format="yolo", label_fields=["class_labels"]),
+        )
+    else:
+        return A.Compose(A.Resize(height=height, width=width))
+
+
 class Albumentations:
     """
     Albumentations transformations for image augmentation.
@@ -1791,7 +1868,11 @@ class Albumentations:
         prefix = colorstr("albumentations: ")
 
         try:
+
             import albumentations as A
+            # Inside your class
+            self.resize = create_resize_transform
+
 
             check_version(A.__version__, "1.0.3", hard=True)  # version requirement
 
@@ -1841,10 +1922,11 @@ class Albumentations:
 
             # Transforms
             T = [
-                A.Blur(p=0.01),
-                A.MedianBlur(p=0.01),
+                A.Blur(p=0.2, blur_limit=(1, 3)),
+                A.MedianBlur(p=0.2),
                 A.ToGray(p=0.01),
-                A.CLAHE(p=0.01),
+                A.CLAHE(p=0),
+                A.ElasticTransform(p=0.25, border_mode = cv2.BORDER_CONSTANT, value = 2),
                 A.RandomBrightnessContrast(p=0.0),
                 A.RandomGamma(p=0.0),
                 A.ImageCompression(quality_lower=75, p=0.0),
@@ -1853,10 +1935,19 @@ class Albumentations:
             # Compose transforms
             self.contains_spatial = any(transform.__class__.__name__ in spatial_transforms for transform in T)
             self.transform = (
-                A.Compose(T, bbox_params=A.BboxParams(format="yolo", label_fields=["class_labels"]))
+                A.Compose([T],
+                 bbox_params=A.BboxParams(format="yolo", label_fields=["class_labels"]))
                 if self.contains_spatial
                 else A.Compose(T)
             )
+        #     self.resize = lambda height, width: (
+        #     A.Compose(
+        #         A.Resize(height=height, width=width),
+        #         bbox_params=A.BboxParams(format="yolo", label_fields=["class_labels"]),
+        #     )
+        #     if self.contains_spatial
+        #     else A.Compose(A.Resize(height=height, width=width))
+        # )
             LOGGER.info(prefix + ", ".join(f"{x}".replace("always_apply=False, ", "") for x in T if x.p))
         except ImportError:  # package not installed, skip
             pass
@@ -1905,14 +1996,24 @@ class Albumentations:
                 labels["instances"].normalize(*im.shape[:2][::-1])
                 bboxes = labels["instances"].bboxes
                 # TODO: add supports of segments and keypoints
-                new = self.transform(image=im, bboxes=bboxes, class_labels=cls)  # transformed
-                if len(new["class_labels"]) > 0:  # skip update if no bbox in new im
-                    labels["img"] = new["image"]
-                    labels["cls"] = np.array(new["class_labels"])
-                    bboxes = np.array(new["bboxes"], dtype=np.float32)
-                labels["instances"].update(bboxes=bboxes)
+                new = self.transform(image=im, bboxes=bboxes, class_labels=cls, mask = labels['instances'].segments)  # transformed
+        
+                labels["img"] = new["image"]
+                labels['instances'].segments = new['mask']
+                labels["cls"] = np.array(new["class_labels"])
+                bboxes = np.array(new["bboxes"], dtype=np.float32)
+                labels["instances"].update(bboxes=bboxes if bboxes.size != 0 else np.empty((0, 4)))
+                labels['instances'].segments = new['mask']
+
+
         else:
             labels["img"] = self.transform(image=labels["img"])["image"]  # transformed
+
+        if labels["resized_shape"] != labels["img"].shape[:2]:
+            letter_box = LetterBox(new_shape=labels["resized_shape"])
+            result = letter_box(labels=labels)
+            labels["img"] = result["img"]
+            labels["instances"] = result["instances"]
 
         return labels
 
@@ -2303,7 +2404,9 @@ def v8_transforms(dataset, imgsz, hyp, stretch=False):
         pre_transform=None if stretch else LetterBox(new_shape=(imgsz, imgsz)),
     )
 
-    pre_transform = Compose([mosaic, affine])
+    elastic = ElasticTransform(alpha = 1, sigma = 50, p = 1, border_mode=4, interpolation=1, pre_transform=None if stretch else LetterBox(new_shape=(imgsz, imgsz)),)
+
+    pre_transform = Compose([mosaic, affine ])
     if hyp.copy_paste_mode == "flip":
         pre_transform.insert(1, CopyPaste(p=hyp.copy_paste, mode=hyp.copy_paste_mode))
     else:

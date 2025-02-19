@@ -3,5 +3,6 @@
 from .predict import DetectionPredictor
 from .train import DetectionTrainer
 from .val import DetectionValidator
+from .val_noclass import NoClassDetectionValidator
 
-__all__ = "DetectionPredictor", "DetectionTrainer", "DetectionValidator"
+__all__ = "DetectionPredictor", "DetectionTrainer", "DetectionValidator", "NoClassDetectionValidator"

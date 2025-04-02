@@ -47,6 +47,9 @@ class DetectionValidator(BaseValidator):
                 "WARNING ⚠️ 'save_hybrid=True' will cause incorrect mAP.\n"
             )
 
+        self.file_predictions = {}
+
+
     def preprocess(self, batch):
         """Preprocesses batch of images for YOLO training."""
         batch["img"] = batch["img"].to(self.device, non_blocking=True)
@@ -159,6 +162,20 @@ class DetectionValidator(BaseValidator):
                     self.confusion_matrix.process_batch(predn, bbox, cls)
             for k in self.stats.keys():
                 self.stats[k].append(stat[k])
+
+            
+            ### Проверка правильности предсказания для файла (ADDED CODE) 
+            im_file = batch["im_file"][si]  # Название файла
+            if nl:  # Если есть ground truth объекты
+                tp = stat["tp"].any(dim=1).sum().item()  # Количество TP
+                fp = npr - tp  # Количество FP
+                fn = nl - tp  # Количество FN
+                is_correct = (tp == nl) and (fp == 0)  # Все объекты найдены и нет FP
+            else:  # Если ground truth объектов нет
+                is_correct = (npr == 0)  # Предсказание верно, если нет FP
+            self.file_predictions[im_file] = is_correct
+
+            
 
             # Save
             if self.args.save_json:

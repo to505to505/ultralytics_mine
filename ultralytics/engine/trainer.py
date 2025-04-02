@@ -101,9 +101,9 @@ class BaseTrainer:
         self.args = get_cfg(cfg, overrides)
         self.check_resume(overrides)
         self.device = select_device(self.args.device, self.args.batch)
-        self.validator_val = None
+       
         self.validator_train = None
-        self.validator_test = None
+        self.validator = None
         self.metrics = None
         self.metrics_test = None
         self.metrics_train = None
@@ -302,9 +302,9 @@ class BaseTrainer:
                 self.testset, batch_size=batch_size if self.args.task == "obb" else batch_size * 2, rank=-1, mode="val"
             )
             self.validator_train = self.get_validator('train')
-            self.validator_test = self.get_validator('test')
+            self.validator = self.get_validator('test')
            
-            metric_keys = [f'test/{k}' for k in self.validator_test.metrics.keys] + [f'train/{k}' for k in self.validator_train.metrics.keys] + self.label_loss_items(prefix="val")
+            metric_keys = [f'test/{k}' for k in self.validator.metrics.keys] + [f'train/{k}' for k in self.validator_train.metrics.keys] + self.label_loss_items(prefix="val")
             self.metrics = dict(zip(metric_keys, [0] * len(metric_keys)))
             
             self.ema = ModelEMA(self.model)
@@ -617,7 +617,7 @@ class BaseTrainer:
 
         The returned dict is expected to contain "fitness" key.
         """
-        metrics_test = self.validator_test(self)
+        metrics_test = self.validator(self)
         metrics_train= self.validator_train(self)
     
 

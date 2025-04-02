@@ -27,6 +27,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
+import csv
 
 from ultralytics.cfg import get_cfg, get_save_dir
 from ultralytics.data.utils import check_cls_dataset, check_det_dataset
@@ -90,6 +91,7 @@ class BaseValidator:
         self.stats = None
         self.confusion_matrix = None
         self.nc = None
+        self.file_predictions = {}
         self.iouv = None
         self.jdict = None
         self.speed = {"preprocess": 0.0, "inference": 0.0, "loss": 0.0, "postprocess": 0.0}
@@ -203,6 +205,30 @@ class BaseValidator:
         self.finalize_metrics()
         self.print_results()
         self.run_callbacks("on_val_end")
+
+
+
+
+        if hasattr(self, "file_predictions") and self.file_predictions:
+             csv_path = self.save_dir / "prediction_correctness.csv"
+             try:
+                 with open(csv_path, "w", newline="") as f:
+                     writer = csv.writer(f)
+                     writer.writerow(["filename", "is_correct"]) # Write header
+                     # Sort by filename for consistent output
+                     sorted_items = sorted(self.file_predictions.items())
+                     for filename, is_correct in sorted_items:
+                          # Get just the basename in case full paths were stored
+                         base_filename = Path(filename).name
+                         writer.writerow([base_filename, is_correct])
+                 LOGGER.info(f"Prediction correctness saved to {csv_path}")
+             except Exception as e:
+                 LOGGER.warning(f"Failed to save prediction correctness CSV: {e}")
+         # ---------------------------------------------
+
+
+
+
         if self.training:
             model.float()
             results = {**stats, **trainer.label_loss_items(self.loss.cpu() / len(self.dataloader), prefix="val")}

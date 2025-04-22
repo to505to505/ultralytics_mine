@@ -125,6 +125,9 @@ class BaseTrainer:
         self.batch_size = self.args.batch
         self.epochs = self.args.epochs or 100  # in case users accidentally pass epochs=None with timed training
         self.start_epoch = 0
+
+
+        self.with_train = self.args.with_train or False
         if RANK == -1:
             print_args(vars(self.args))
 
@@ -301,10 +304,13 @@ class BaseTrainer:
             self.test_loader = self.get_dataloader(
                 self.testset, batch_size=batch_size if self.args.task == "obb" else batch_size * 2, rank=-1, mode="val"
             )
-            self.validator_train = self.get_validator('train')
+            if self.with_train:
+                self.validator_train = self.get_validator('train')
             self.validator = self.get_validator('test')
-           
-            metric_keys = [f'test/{k}' for k in self.validator.metrics.keys] + [f'train/{k}' for k in self.validator_train.metrics.keys] + self.label_loss_items(prefix="val")
+            if self.with_train:
+                metric_keys = [f'test/{k}' for k in self.validator.metrics.keys] + [f'train/{k}' for k in self.validator_train.metrics.keys] + self.label_loss_items(prefix="val")
+            else:
+                metric_keys = [f'test/{k}' for k in self.validator.metrics.keys] + self.label_loss_items(prefix="val")
             self.metrics = dict(zip(metric_keys, [0] * len(metric_keys)))
             
             self.ema = ModelEMA(self.model)
@@ -444,15 +450,24 @@ class BaseTrainer:
                 self.ema.update_attr(self.model, include=["yaml", "nc", "args", "names", "stride", "class_weights"])
 
                 # Validation
+                if self.with_train:
+                    self.metrics_test, self.metrics_train, self.fitness = self.validate()
                 
-                self.metrics_test, self.metrics_train, self.fitness = self.validate()
-                
-                self.save_metrics(metrics={
-    **self.label_loss_items(self.tloss),
-    **{f"test/{k}": v for k, v in self.metrics_test.items()},
-    **{f"train/{k}": v for k, v in self.metrics_train.items()},
-    **self.lr
-})
+                    self.save_metrics(metrics={
+        **self.label_loss_items(self.tloss),
+        **{f"test/{k}": v for k, v in self.metrics_test.items()},
+        **{f"train/{k}": v for k, v in self.metrics_train.items()},
+        **self.lr
+
+})              
+                else:
+                    self.metrics_test, self.fitness = self.validate()
+                    self.save_metrics(metrics={
+        **self.label_loss_items(self.tloss),
+        **{f"test/{k}": v for k, v in self.metrics_test.items()},
+        **self.lr
+
+})              
                 self.plot_metrics()
                 self.stop |= self.stopper(epoch + 1, self.fitness) or final_epoch
                 if self.args.time:
@@ -611,20 +626,24 @@ class BaseTrainer:
         """Allows custom preprocessing model inputs and ground truths depending on task type."""
         return batch
 
-    def validate(self):
+    def validate(self, with_train=False):
         """
         Runs validation on test set using self.validator.
 
         The returned dict is expected to contain "fitness" key.
         """
         metrics_test = self.validator(self)
-        metrics_train= self.validator_train(self)
+        if with_train:
+            metrics_train= self.validator_train(self)
     
 
         fitness = metrics_test.pop("fitness", -self.loss.detach().cpu().numpy())  # use loss as fitness measure if not found
         if not self.best_fitness or self.best_fitness < fitness:
             self.best_fitness = fitness
-        return metrics_test, metrics_train, fitness
+        if with_train:
+            return metrics_test, metrics_train, fitness
+        else:
+            return metrics_test, fitness
 
     def get_model(self, cfg=None, weights=None, verbose=True):
         """Get model and raise NotImplementedError for loading cfg files."""

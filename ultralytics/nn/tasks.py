@@ -38,6 +38,7 @@ from ultralytics.nn.modules import (
     C2fAttn,
     C2fCIB,
     C2fPSA,
+    A2C2f,
     C3Ghost,
     C3k2,
     C3x,
@@ -977,6 +978,7 @@ def parse_model(d, ch, verbose=True):  # model_dict, input_channels(3)
             Conv,
             ConvTranspose,
             GhostConv,
+            A2C2f,
             Bottleneck,
             GhostBottleneck,
             SPP,
@@ -1021,6 +1023,7 @@ def parse_model(d, ch, verbose=True):  # model_dict, input_channels(3)
                 BottleneckCSP,
                 C1,
                 C2,
+                A2C2f,
                 C2f,
                 C3k2,
                 C2fAttn,
@@ -1039,6 +1042,10 @@ def parse_model(d, ch, verbose=True):  # model_dict, input_channels(3)
                 legacy = False
                 if scale in "mlx":
                     args[3] = True
+            if m is A2C2f:
+                legacy = False
+                if scale in "lx":  # for L/X sizes
+                    args.extend((True, 1.2))
         elif m is AIFI:
             args = [ch[f], *args]
         elif m in {HGStem, HGBlock}:

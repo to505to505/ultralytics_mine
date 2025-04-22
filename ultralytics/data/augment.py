@@ -949,68 +949,7 @@ class MixUp(BaseMixTransform):
 
 
 import albumentations as A
-class ElasticTransform:
-    def __init__(
-        self, alpha=1, sigma=50, interpolation=1, border_mode=4, p =0.5, pre_transform = None
-    ):
-            
-        self.alpha = alpha
-        self.sigma = sigma
-        self.interpolation = interpolation
-        self.border_mode = border_mode
-        self.p = p
-        self.pre_transform = pre_transform
 
-
-    def apply_trans(self, image, mask, bboxes):
-        transform = A.Compose([
-        A.ElasticTransform(alpha=self.alpha, sigma=self.sigma, p=self.p),
-        ], is_check_shapes = False, bbox_params=A.BboxParams(format="yolo", label_fields=["class_labels"]))
-        transformed = transform(image=image, mask=mask, bboxes=bboxes)
-
-        return transformed
-       
-
-    def __call__(self, labels):
-        if self.pre_transform and "mosaic_border" not in labels:
-            labels = self.pre_transform(labels)
-        labels.pop("ratio_pad", None)  # do not need ratio pad
-
-        img = labels["img"]
-        cls = labels["cls"]
-        instances = labels.pop("instances")
-        # Make sure the coord formats are right
-        instances.convert_bbox(format="xyxy")
-        instances.denormalize(*img.shape[:2][::-1])
-
-        transformed = self.apply_trans(img, instances.segments, instances.bboxes)
-        
-        img = transformed['image']
-
-        if len(segments):
-            bboxes = transformed['bboxes']
-
-            segments = transformed['mask']
-        
-        # Update bboxes if there are segments.
-      
-       
-        new_instances = Instances(bboxes, segments, bbox_format="xyxy", normalized=False)
-        # Clip
-        new_instances.clip(*self.size)
-
-        
-        # Make the bboxes have the same scale with new_bboxes
-        i = self.box_candidates(
-            box1=instances.bboxes.T, box2=new_instances.bboxes.T, area_thr=0.01 if len(segments) else 0.10
-        )
-        labels["instances"] = new_instances[i]
-        labels["cls"] = cls[i]
-        labels["img"] = img
-        labels["resized_shape"] = img.shape[:2]
-        return labels
-
-            
 
 
 class RandomPerspective:
@@ -1832,7 +1771,7 @@ class Albumentations:
         - Spatial transforms are handled differently and require special processing for bounding boxes.
     """
 
-    def __init__(self, p=1.0):
+    def __init__(self, hyp, p=1.0):
         """
         Initialize the Albumentations transform object for YOLO bbox formatted parameters.
 
@@ -1919,17 +1858,15 @@ class Albumentations:
                 "VerticalFlip",
                 "XYMasking",
             }  # from https://albumentations.ai/docs/getting_started/transforms_and_targets/#spatial-level-transforms
-
+    
+      
             # Transforms
             T = [
-                A.Blur(p=0.2, blur_limit=(1, 3)),
-                A.MedianBlur(p=0.2),
-                A.ToGray(p=0.01),
-                A.CLAHE(p=0),
-                A.ElasticTransform(p=0.25, border_mode = cv2.BORDER_CONSTANT, value = 2),
-                A.RandomBrightnessContrast(p=0.0),
-                A.RandomGamma(p=0.0),
-                A.ImageCompression(quality_lower=75, p=0.0),
+                A.Blur(p=hyp.blur, blur_limit=(1, 3)),
+                A.RandomCrop(width=hyp.random_crop_size, height=hyp.random_crop_size, p=hyp.random_crop_p),  # Random crop
+                A.GridDistortion(num_steps=3, distort_limit=0.15, p = hyp.grid_distortion),
+                A.ElasticTransform(p=hyp.elastic, border_mode = cv2.BORDER_CONSTANT, alpha = 100, sigma = 10),  # Elastic transform
+          
             ]
 
             # Compose transforms
@@ -2404,7 +2341,7 @@ def v8_transforms(dataset, imgsz, hyp, stretch=False):
         pre_transform=None if stretch else LetterBox(new_shape=(imgsz, imgsz)),
     )
 
-    elastic = ElasticTransform(alpha = 1, sigma = 50, p = 1, border_mode=4, interpolation=1, pre_transform=None if stretch else LetterBox(new_shape=(imgsz, imgsz)),)
+    
 
     pre_transform = Compose([mosaic, affine ])
     if hyp.copy_paste_mode == "flip":
@@ -2431,7 +2368,7 @@ def v8_transforms(dataset, imgsz, hyp, stretch=False):
         [
             pre_transform,
             MixUp(dataset, pre_transform=pre_transform, p=hyp.mixup),
-            Albumentations(p=1.0),
+            Albumentations(hyp = hyp, p=1.0),
             RandomHSV(hgain=hyp.hsv_h, sgain=hyp.hsv_s, vgain=hyp.hsv_v),
             RandomFlip(direction="vertical", p=hyp.flipud),
             RandomFlip(direction="horizontal", p=hyp.fliplr, flip_idx=flip_idx),

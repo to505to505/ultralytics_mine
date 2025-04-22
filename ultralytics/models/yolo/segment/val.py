@@ -68,6 +68,7 @@ class SegmentationValidator(DetectionValidator):
             "R",
             "mAP50",
             "mAP50-95)",
+            "Dice(M)",
         )
 
     def postprocess(self, preds):
@@ -128,7 +129,7 @@ class SegmentationValidator(DetectionValidator):
 
             # Masks
             gt_masks = pbatch.pop("masks")
-            print(gt_masks.shape)
+            
         
             # Predictions
             if self.args.single_cls:
@@ -145,6 +146,67 @@ class SegmentationValidator(DetectionValidator):
                 stat["tp_m"] = self._process_batch(
                     predn, bbox, cls, pred_masks, gt_masks, self.args.overlap_mask, masks=True
                 )
+
+                tp_mask_50 = stat["tp_m"][:, 0] # Берем TP для порога IoU 0.5
+                tp_pred_indices = torch.where(tp_mask_50)[0] # Индексы предсказаний, которые являются TP
+
+                if len(tp_pred_indices) > 0:
+                    # Получаем предсказанные маски и классы для TP
+                    tp_pred_masks = pred_masks[tp_pred_indices]
+                    tp_pred_classes = predn[tp_pred_indices, 5].int()
+
+                    # Получаем GT маски и классы
+                    gt_classes = cls.int()
+
+                    # Вычисляем Dice для каждой TP маски с лучшей GT маской того же класса
+                    dice_scores_list = []
+                    dice_classes_list = []
+
+                    for i in range(len(tp_pred_indices)):
+                        pred_mask_i = tp_pred_masks[i] # (H, W)
+                        pred_class_i = tp_pred_classes[i]
+
+                        # Находим все GT маски того же класса
+                        gt_class_mask = gt_classes == pred_class_i
+                        if not gt_class_mask.any():
+                            continue # Нет GT такого класса, пропускаем (хотя это странно для TP)
+
+                        # --- Обработка gt_masks в зависимости от overlap ---
+                        if self.args.overlap_mask:
+                             # Извлекаем нужную маску из оверлейной карты
+                             # Это требует знания индекса GT, который мы не храним в этом подходе.
+                             # Пропустим Dice для overlap=True в этом упрощенном варианте.
+                             # LOGGER.warning("Dice score calculation currently not fully supported for overlap_mask=True without matched indices.")
+                             continue # Пропускаем вычисление Dice для overlap
+                        elif gt_masks.ndim == 3:
+                             gt_masks_same_class = gt_masks[gt_class_mask] # (num_same_class_gt, H, W)
+                        else:
+                             LOGGER.warning(f"Unexpected gt_masks shape: {gt_masks.shape}. Skipping Dice.")
+                             continue
+
+                        if gt_masks_same_class.shape[0] == 0:
+                             continue # Нет GT масок этого класса
+
+                        # Вычисляем IoU между текущей предсказанной маской и всеми GT масками того же класса
+                        iou_with_gts = mask_iou(
+                            gt_masks_same_class.view(gt_masks_same_class.shape[0], -1),
+                            pred_mask_i.view(1, -1)
+                        ).squeeze() # (num_same_class_gt,)
+
+                        # Находим GT маску с максимальным IoU
+                        best_gt_index = torch.argmax(iou_with_gts)
+                        best_gt_mask = gt_masks_same_class[best_gt_index] # (H, W)
+
+                        # Вычисляем Dice Score между предсказанной и лучшей GT маской
+                        dice_val = dice_score(pred_mask_i.unsqueeze(0), best_gt_mask.unsqueeze(0))[0] # Вычисляем для одной пары
+
+                        dice_scores_list.append(dice_val.item())
+                        dice_classes_list.append(pred_class_i.item())
+
+                    if dice_scores_list:
+                        current_dice_scores = np.array(dice_scores_list)
+                        current_dice_classes = np.array(dice_classes_list, dtype=int)
+
                 if self.args.plots:
                     self.confusion_matrix.process_batch(predn, bbox, cls)
 

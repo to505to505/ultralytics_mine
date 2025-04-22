@@ -516,7 +516,9 @@ class ConfusionMatrix:
             on_plot(plot_fname)
 
     def print(self):
+
         """Print the confusion matrix to the console."""
+   
         for i in range(self.nc + 1):
             LOGGER.info(" ".join(map(str, self.matrix[i])))
 
@@ -974,6 +976,29 @@ class DetMetrics(SimpleClass):
         return self.box.curves_results
 
 
+def dice_score(pred_masks, gt_masks, eps=1e-7):
+        """
+        Вычисляет Dice Score между предсказанными и истинными масками.
+
+        Args:
+            pred_masks (torch.Tensor): Предсказанные маски (N, H, W), бинарные или вероятностные.
+            gt_masks (torch.Tensor): Истинные маски (N, H, W), бинарные.
+            eps (float): Малое значение для предотвращения деления на ноль.
+
+        Returns:
+            (torch.Tensor): Dice Score для каждой пары масок (N,).
+        """
+        assert pred_masks.shape == gt_masks.shape, "Формы масок должны совпадать"
+        pred_masks = pred_masks.view(pred_masks.shape[0], -1).float() # (N, H*W)
+        gt_masks = gt_masks.view(gt_masks.shape[0], -1).float()   # (N, H*W)
+
+        intersection = (pred_masks * gt_masks).sum(1)
+        sum_pred = pred_masks.sum(1)
+        sum_gt = gt_masks.sum(1)
+
+        dice = (2. * intersection + eps) / (sum_pred + sum_gt + eps)
+        return dice
+
 class SegmentMetrics(SimpleClass):
     """
     Calculates and aggregates detection and segmentation metrics over a given set of classes.
@@ -1014,7 +1039,14 @@ class SegmentMetrics(SimpleClass):
         self.speed = {"preprocess": 0.0, "inference": 0.0, "loss": 0.0, "postprocess": 0.0}
         self.task = "segment"
 
-    def process(self, tp, tp_m, conf, pred_cls, target_cls):
+        ### ADDED for DICE
+        self.nc = len(names)
+        self.dice_scores_sum_per_class = np.zeros(self.nc)
+        self.dice_counts_per_class = np.zeros(self.nc, dtype=int)
+        ###
+    
+    
+    def process(self, tp, tp_m, conf, pred_cls, target_cls,dice_scores=None, dice_classes=None):
         """
         Processes the detection and segmentation metrics over the given set of predictions.
 
@@ -1024,6 +1056,8 @@ class SegmentMetrics(SimpleClass):
             conf (list): List of confidence scores.
             pred_cls (list): List of predicted classes.
             target_cls (list): List of target classes.
+            dice_scores (np.ndarray, optional): Массив Dice scores для TP масок.
+            dice_classes (np.ndarray, optional): Массив классов для TP Dice scores.
         """
         results_mask = ap_per_class(
             tp_m,
@@ -1052,6 +1086,20 @@ class SegmentMetrics(SimpleClass):
         self.box.nc = len(self.names)
         self.box.update(results_box)
 
+        if dice_scores is not None and dice_classes is not None and len(dice_scores) > 0:
+                # Убедимся, что массивы имеют правильный размер nc
+                if len(self.dice_scores_sum_per_class) != self.nc:
+                    self.dice_scores_sum_per_class = np.zeros(self.nc)
+                    self.dice_counts_per_class = np.zeros(self.nc, dtype=int)
+
+                unique_classes_dice = np.unique(dice_classes)
+                for c in unique_classes_dice:
+                    if c < self.nc: # Проверка на выход за пределы
+                        class_dice_scores = dice_scores[dice_classes == c]
+                        self.dice_scores_sum_per_class[c] += class_dice_scores.sum()
+                        self.dice_counts_per_class[c] += len(class_dice_scores)
+
+
     @property
     def keys(self):
         """Returns a list of keys for accessing metrics."""
@@ -1064,20 +1112,47 @@ class SegmentMetrics(SimpleClass):
             "metrics/recall(M)",
             "metrics/mAP50(M)",
             "metrics/mAP50-95(M)",
+            "metrics/dice(M)", 
         ]
 
     def mean_results(self):
         """Return the mean metrics for bounding box and segmentation results."""
-        return self.box.mean_results() + self.seg.mean_results()
+        return self.box.mean_results() + self.seg.mean_results() +  [self.mdice]
 
     def class_result(self, i):
         """Returns classification results for a specified class index."""
-        return self.box.class_result(i) + self.seg.class_result(i)
+        dice_val = 0.0
+        if i < len(self.ap_class_index):
+            c = self.ap_class_index[i]
+            if c < len(self.dice_per_class):
+                 dice_val = self.dice_per_class[c]
+        return self.box.class_result(i) + self.seg.class_result(i) + [dice_val]
 
     @property
     def maps(self):
         """Returns mAP scores for object detection and semantic segmentation models."""
         return self.box.maps + self.seg.maps
+    
+     # --- ДОБАВЛЕНО: Свойства для Dice ---
+    @property
+    def mdice(self):
+        """Средний Dice Score по всем классам."""
+        valid_counts = self.dice_counts_per_class > 0
+        if np.any(valid_counts):
+            mean_dice_per_class = self.dice_scores_sum_per_class[valid_counts] / self.dice_counts_per_class[valid_counts]
+            return mean_dice_per_class.mean()
+        return 0.0
+
+    @property
+    def dice_per_class(self):
+        """Dice Score для каждого класса."""
+        dice_pc = np.zeros(self.nc)
+        valid_counts = self.dice_counts_per_class > 0
+        dice_pc[valid_counts] = self.dice_scores_sum_per_class[valid_counts] / self.dice_counts_per_class[valid_counts]
+        return dice_pc
+    
+
+
 
     @property
     def fitness(self):

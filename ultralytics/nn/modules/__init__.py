@@ -33,6 +33,7 @@ from .block import (
     ELAN1,
     PSA,
     SPP,
+    A2C2f,
     SPPELAN,
     SPPF,
     AConv,
@@ -166,6 +167,7 @@ __all__ = (
     "RepVGGDW",
     "CIB",
     "C2fCIB",
+    "A2C2f",
     "Attention",
     "PSA",
 )
